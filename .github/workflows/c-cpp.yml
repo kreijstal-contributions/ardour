@@ -31,4 +31,4 @@ jobs:
        git tag -a "8.2-0-gdummy" -m "Dummy tag for CI"
        # Run the configuration script
        python waf configure --dist-target=mingw --prefix=/mingw64 --configdir=/share --check-cxx-compiler=g++ --check-c-compiler=gcc --cxx11 --no-phone-home --optimize --ptformat --with-backends=jack,portaudio,dummy 
-       ./waf -vvv -j1
+       python waf ||python waf
