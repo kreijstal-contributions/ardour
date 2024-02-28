@@ -626,6 +626,12 @@ Editor::Editor ()
 	h->pack_start (edit_controls_vbox);
 	controls_layout.add (*h);
 
+	HSeparator* separator = manage (new HSeparator());
+	separator->set_name("TrackSeparator");
+	separator->set_size_request(-1, 1);
+	separator->show();
+	edit_controls_vbox.pack_end (*separator, false, false);
+
 	controls_layout.set_name ("EditControlsBase");
 	controls_layout.add_events (Gdk::BUTTON_PRESS_MASK|Gdk::BUTTON_RELEASE_MASK|Gdk::ENTER_NOTIFY_MASK|Gdk::LEAVE_NOTIFY_MASK|Gdk::SCROLL_MASK);
 	controls_layout.signal_button_press_event().connect (sigc::mem_fun(*this, &Editor::edit_controls_button_event));
@@ -3063,7 +3069,7 @@ Editor::_snap_to_bbt (timepos_t const & presnap, Temporal::RoundMode direction, 
 		 * for the snap, based on the grid setting.
 		 */
 
-		int divisor;
+		float divisor;
 		switch (_grid_type) {
 			case GridTypeBeatDiv3:
 			case GridTypeBeatDiv6:
@@ -3074,12 +3080,15 @@ Editor::_snap_to_bbt (timepos_t const & presnap, Temporal::RoundMode direction, 
 			case GridTypeBeatDiv5:
 			case GridTypeBeatDiv10:
 			case GridTypeBeatDiv20:
-				divisor = 5;
+				divisor = 2.5;
 				break;
 			case GridTypeBeatDiv7:
 			case GridTypeBeatDiv14:
 			case GridTypeBeatDiv28:
-				divisor = 7;
+				/* Septuplets suffer from drifting until libtemporal handles fractional ticks
+				 * or if ticks_per_beat (ppqn) is raised to a point where the result
+				 */
+				divisor = 3.5;
 				break;
 			case GridTypeBeat:
 				divisor = 1;
@@ -3617,6 +3626,11 @@ Editor::build_grid_type_menu ()
 	grid_type_selector.AddMenuElem (Menu_Helpers::MenuElem (_("Quintuplets"), *_quintuplet_menu));
 
 	/* septuplet grid */
+#if 0
+	/* Septuplets suffer from drifting and can't be draw properly until libtemporal handles fractional ticks
+	 * or if ticks_per_beat (ppqn) is raised to a point where the result
+	 * of Temporal::ticks_per_beat / beat_div is always an integer
+	 */
 	Gtk::Menu *_septuplet_menu = manage (new Menu);
 	MenuList& septuplet_items (_septuplet_menu->items());
 	{
@@ -3625,6 +3639,7 @@ Editor::build_grid_type_menu ()
 		septuplet_items.push_back (MenuElem (grid_type_strings[(int)GridTypeBeatDiv28], sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_selection_done), (GridType) GridTypeBeatDiv28)));
 	}
 	grid_type_selector.AddMenuElem (Menu_Helpers::MenuElem (_("Septuplets"), *_septuplet_menu));
+#endif
 
 	grid_type_selector.AddMenuElem(SeparatorElem());
 	grid_type_selector.AddMenuElem (MenuElem (grid_type_strings[(int)GridTypeTimecode], sigc::bind (sigc::mem_fun(*this, &Editor::grid_type_selection_done), (GridType) GridTypeTimecode)));

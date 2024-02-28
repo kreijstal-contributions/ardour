@@ -2,7 +2,7 @@ ardour {
 	["type"]    = "EditorAction",
 	name        = "Import ADM BWF File",
 	author      = "Ardour Team",
-	description = [[...]]
+	description = [[Load dynamic meta-data from an ADM file, import audio channels to the timeline and copy fixed settings for export.]]
 }
 
 function factory () return function ()
@@ -28,6 +28,12 @@ function factory () return function ()
 		return 1
 	end
 
+	if 0 ~= os.execute ("master_info -h") then
+		local md = LuaDialog.Message ("Master Info Tool Missing", "The 'master_info' tool from Dolby_Atmos_Storage_SIDK_v2.3.2/Tools/ needs to be in $PATH for ADM/BWF meta-data import to work.", LuaDialog.MessageType.Error, LuaDialog.ButtonType.Close)
+		print (md:run())
+		return 1
+	end
+
 	local rv = LuaDialog.Dialog ("Load ADM/BWF File",
 	{
 		{ type = "file", key = "file", title = "Choose ADM/BWF File", path = "" },
@@ -38,7 +44,11 @@ function factory () return function ()
 	end
 
 	-- place `Dolby_Atmos_Storage_SIDK_v2.3.2/Tools/linux/lin64_fpic/master_info` in $PATH
-	os.execute ("master_info -printMetadata \"" .. rv['file'] .. "\" > /tmp/adm.info")
+	if 0 ~= os.execute ("master_info -printMetadata \"" .. rv['file'] .. "\" > /tmp/adm.info") then
+		local md = LuaDialog.Message ("Master Info Tool Error", "The 'master_info' tool failed to extract meta-data from\n'" .. rv['file'] .. "'.", LuaDialog.MessageType.Error, LuaDialog.ButtonType.Close)
+		print (md:run())
+		return 1
+	end
 
 	if Session:get_tracks():size() == 0 then
 		print ("Importing Files ...")
@@ -95,6 +105,7 @@ function factory () return function ()
 
 	print ("Setting Metadata")
 
+
 	for obj, d in pairs (meta) do
 		local r = Session:get_remote_nth_route (obj)
 		if r:isnil () then goto skip end
@@ -103,7 +114,12 @@ function factory () return function ()
 		assert(1 == s:n_pannables ())
 		local p = s:pannable (0)
 
-		local thin = 0.00001
+		p.pan_pos_x:to_ctrl():list():set_interpolation (Evoral.InterpolationStyle.Discrete)
+		p.pan_pos_y:to_ctrl():list():set_interpolation (Evoral.InterpolationStyle.Discrete)
+		p.pan_pos_z:to_ctrl():list():set_interpolation (Evoral.InterpolationStyle.Discrete)
+		p.pan_snap:to_ctrl():list():set_interpolation (Evoral.InterpolationStyle.Discrete)
+
+		local thin = 0 -- 0.00001
 
 		ARDOUR.LuaAPI.set_automation_data (p.pan_pos_x, d['x'], thin)
 		ARDOUR.LuaAPI.set_automation_data (p.pan_pos_y, d['y'], thin)
@@ -131,4 +147,15 @@ function factory () return function ()
 
 	Session:surround_master():surround_return():set_bed_mix (true, rv['file'], imap:to_array ())
 	print ("OK")
+end end
+
+function icon (params) return function (ctx, width, height, fg)
+	local wh = math.min (width, height)
+	ctx:set_source_rgba (ARDOUR.LuaAPI.color_to_rgba (fg))
+	ctx:arc (0.5 * width - wh * 0.3, 0.5 * height, wh * .275, -0.5 * math.pi , 0.5 * math.pi)
+	ctx:close_path ()
+	ctx:fill ()
+	ctx:arc (0.5 * width + wh * 0.3, 0.5 * height, wh * .275, 0.5 * math.pi , 1.5 * math.pi)
+	ctx:close_path ()
+	ctx:fill ()
 end end

@@ -35,6 +35,7 @@
 #endif
 
 #include "ardour/chan_mapping.h"
+#include "ardour/fixed_delay.h"
 #include "ardour/lufs_meter.h"
 #include "ardour/monitor_processor.h"
 #include "ardour/processor.h"
@@ -62,6 +63,14 @@ public:
 
 	void setup_export (std::string const&, samplepos_t, samplepos_t);
 	void finalize_export ();
+
+	size_t n_channels () const {
+		return _current_n_channels;
+	}
+
+	size_t total_n_channels () const {
+		return _total_n_channels;
+	}
 
 	std::shared_ptr<LV2Plugin> surround_processor () const {
 		return _surround_processor;
@@ -101,6 +110,7 @@ public:
 
 	/* XXX this is only for testing */
 	void set_bed_mix (bool on, std::string const& ref, int* cmap = NULL);
+	void set_sync_and_return (bool on);
 
 	int set_state (XMLNode const&, int version);
 
@@ -116,6 +126,7 @@ private:
 	void evaluate (size_t id, std::shared_ptr<SurroundPannable> const&, timepos_t const& , pframes_t, bool force = false);
 
 	void reset_object_map ();
+	void latency_changed ();
 
 	std::shared_ptr<LV2Plugin> _surround_processor;
 
@@ -169,6 +180,7 @@ private:
 	int              _current_render_mode[max_object_id];
 	size_t           _channel_id_map[max_object_id];
 	size_t           _current_n_channels;
+	size_t           _total_n_channels;
 	MainOutputFormat _current_output_format;
 	BufferSet        _surround_bufs;
 	ChanMapping      _in_map;
@@ -179,6 +191,8 @@ private:
 	bool             _rolling;
 	bool             _with_bed;
 	std::string      _export_reference;
+	bool             _sync_and_align;
+	FixedDelay       _delaybuffers;
 	std::atomic<int> _flush;
 };
 

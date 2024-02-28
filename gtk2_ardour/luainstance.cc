@@ -459,8 +459,7 @@ lua_exec (std::string cmd)
 	if (x.start()) {
 		return -1;
 	}
-	x.wait ();
-	return 0;
+	return x.wait ();
 }
 #endif
 
@@ -1547,6 +1546,9 @@ LuaInstance::pre_seed_scripts ()
 	int id = 0;
 	pre_seed_script ("Mixer Screenshot", id);
 	pre_seed_script ("List Plugins", id);
+#if defined MIXBUS && !defined PLATFORM_WINDOWS
+	pre_seed_script ("Import ADM BWF File", id);
+#endif
 }
 
 bool
@@ -1612,7 +1614,7 @@ LuaInstance::interactive_add (Gtk::Window& parent, LuaScriptInfo::ScriptType typ
 
 	ScriptParameterDialog spd (_("Set Script Parameters"), spi, reg, lsp);
 
-	if (spd.need_interation ()) {
+	if (spd.need_interaction ()) {
 		switch (spd.run ()) {
 			case Gtk::RESPONSE_ACCEPT:
 				break;

@@ -82,6 +82,7 @@ SurroundReturn::SurroundReturn (Session& s, Route* r)
 #endif
 	, _have_au_renderer (false)
 	, _current_n_channels (max_object_id)
+	, _total_n_channels (max_object_id)
 	, _current_output_format (OUTPUT_FORMAT_7_1_4)
 	, _in_map (ChanCount (DataType::AUDIO, 128))
 	, _out_map (ChanCount (DataType::AUDIO, 14 + 6 /* Loudness Meter */))
@@ -90,6 +91,7 @@ SurroundReturn::SurroundReturn (Session& s, Route* r)
 	, _export_end (0)
 	, _rolling (false)
 	, _with_bed (false)
+	, _sync_and_align (false)
 {
 #if !(defined(LV2_EXTENDED) && defined(HAVE_LV2_1_10_0))
 	throw failed_constructor ();
@@ -113,6 +115,9 @@ SurroundReturn::SurroundReturn (Session& s, Route* r)
 	_trim.reset (new Amp (_session, X_("Trim"), r->trim_control (), false));
 	_trim->configure_io (cca128, cca128);
 	_trim->activate ();
+
+	ChanCount cca20 (ChanCount (DataType::AUDIO, 20)); // 7.1.4 + binaural + 5.1
+	_delaybuffers.configure (cca20, 512);
 
 	for (size_t i = 0; i < max_object_id; ++i) {
 		_current_render_mode[i] = -1;
@@ -323,13 +328,21 @@ SurroundReturn::set_block_size (pframes_t nframes)
 samplecnt_t
 SurroundReturn::signal_latency () const
 {
-	return _surround_processor->signal_latency ();
+	return _surround_processor->signal_latency () + _delaybuffers.delay ();
 }
 
 void
 SurroundReturn::flush ()
 {
 	_flush.store (1);
+}
+
+void
+SurroundReturn::latency_changed ()
+{
+	LatencyChanged ();
+	assert (owner());
+	static_cast<Route*>(owner ())->processor_latency_changed (); /* EMIT SIGNAL */
 }
 
 void
@@ -364,6 +377,15 @@ SurroundReturn::set_bed_mix (bool on, std::string const& ref, int* cmap)
 }
 
 void
+SurroundReturn::set_sync_and_return (bool on)
+{
+	if (_sync_and_align == on) {
+		return;
+	}
+	_sync_and_align = on;
+}
+
+void
 SurroundReturn::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample, double speed, pframes_t nframes, bool)
 {
 	if (!check_active ()) {
@@ -373,6 +395,27 @@ SurroundReturn::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_
 	int canderef (1);
 	if (_flush.compare_exchange_strong (canderef, 0)) {
 		_surround_processor->flush ();
+	}
+
+	if (_sync_and_align) {
+		if (!_rolling && start_sample != end_sample) {
+			_delaybuffers.flush ();
+			_surround_processor->deactivate();
+			_surround_processor->activate();
+		}
+		if (0 != (playback_offset() % 512)) {
+			ChanCount cca20 (ChanCount (DataType::AUDIO, 20)); // 7.1.4 + binaural + 5.1
+			if (_delaybuffers.delay () == 0) {
+				_delaybuffers.set (cca20, 512 - playback_offset() % 512);
+			} else {
+				_delaybuffers.set (cca20, 0);
+			}
+			latency_changed ();
+		}
+	} else if (_delaybuffers.delay () != 0) {
+		ChanCount cca20 (ChanCount (DataType::AUDIO, 20)); // 7.1.4 + binaural + 5.1
+		_delaybuffers.set (cca20, 0);
+		latency_changed ();
 	}
 
 	bool with_bed = _with_bed;
@@ -397,7 +440,12 @@ SurroundReturn::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_
 		timepos_t unused_start, unused_end;
 		samplecnt_t latency = effective_latency ();
 
-		for (uint32_t s = 0; s < ss->bufs ().count ().n_audio () && cid < max_object_id; ++s, ++cid) {
+		for (uint32_t s = 0; s < ss->bufs ().count ().n_audio (); ++s, ++cid) {
+
+			if (cid >= max_object_id) {
+				continue;
+			}
+
 			std::shared_ptr<SurroundPannable> const& p (ss->pan_param (s, unused_start, unused_end));
 
 			AutoState const as        = p->automation_state ();
@@ -432,7 +480,7 @@ SurroundReturn::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_
 					 * IOW: end_sample == next cycle's start_sample;
 					 */
 					if (nframes < 2) {
-						evaluate (id, p, timepos_t (start_sample), 0);
+						evaluate (id, p, timepos_t (start_sample + latency), 0);
 					} else {
 						bool found_event = false;
 						timepos_t start (start_sample + latency);
@@ -450,7 +498,7 @@ SurroundReturn::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_
 						}
 						/* inform live renderer */
 						if (!found_event && !_exporting) {
-							evaluate (id, p, end, nframes - 1);
+							evaluate (id, p, start, 0);
 						}
 					}
 				}
@@ -470,13 +518,11 @@ SurroundReturn::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_
 #endif
 				}
 			}
-
-		}
-
-		if (cid >= max_object_id) {
-			break;
 		}
 	}
+
+	_total_n_channels = cid;
+	cid = std::min<size_t> (128, cid);
 
 	if (_current_n_channels != cid) {
 		_current_n_channels = cid;
@@ -579,8 +625,9 @@ SurroundReturn::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_
 	_surround_processor->connect_and_run (_surround_bufs, start_sample, end_sample, speed, _in_map, _out_map, nframes, 0);
 
 	BufferSet::iterator i = _surround_bufs.begin (DataType::AUDIO);
-	for (BufferSet::iterator o = bufs.begin (DataType::AUDIO); o != bufs.end (DataType::AUDIO); ++i, ++o) {
-		o->read_from (*i, nframes);
+	uint32_t idx = 0;
+	for (BufferSet::iterator o = bufs.begin (DataType::AUDIO); o != bufs.end (DataType::AUDIO); ++i, ++o, ++idx) {
+		_delaybuffers.delay (DataType::AUDIO, idx, *o, *i, nframes);
 	}
 
 	if (_exporting) {
@@ -751,15 +798,44 @@ SurroundReturn::setup_export (std::string const& fn, samplepos_t ss, samplepos_t
 
 	bool have_ref = !_export_reference.empty () && Glib::file_test (_export_reference, Glib::FileTest (Glib::FILE_TEST_EXISTS | Glib::FILE_TEST_IS_REGULAR));
 
+	float content_start = ss / (float) _session.nominal_sample_rate ();
+	float content_ffoa = 0;
+	float content_fps = 30;
+
+	switch (_session.config.get_timecode_format()) {
+		case Timecode::timecode_23976:
+			content_fps = 23.976;
+			break;
+		case Timecode::timecode_24:
+			content_fps = 24.0;
+			break;
+		case Timecode::timecode_25:
+			content_fps = 25.0;
+			break;
+		case Timecode::timecode_2997drop:
+			content_fps = 29.97;
+			break;
+		case Timecode::timecode_30:
+			content_fps = 30;
+			break;
+		default:
+			break;
+	}
+
 	uint32_t len = _export_reference.size () + 1;
 	LV2_Options_Option options[] = {
 		{ LV2_OPTIONS_INSTANCE, 0, urids.surr_ReferenceFile,
-			len, urids.atom_Path, _export_reference.c_str()},
+			len, urids.atom_Path, have_ref ? _export_reference.c_str() : NULL},
+		{ LV2_OPTIONS_INSTANCE, 0, urids.surr_ContentStart,
+			len, urids.atom_Float, &content_start },
+		{ LV2_OPTIONS_INSTANCE, 0, urids.surr_ContentFFOA,
+			len, urids.atom_Float, &content_ffoa },
+		{ LV2_OPTIONS_INSTANCE, 0, urids.surr_ContentFPS,
+			len, urids.atom_Float, &content_fps },
 		{ LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, NULL }
 	};
 
-	if (0 == _surround_processor->setup_export (fn.c_str (), have_ref ? options : NULL)) {
-		//std::cout << "SurroundReturn::setup export "<< ss << " to " << es << "\n";
+	if (0 == _surround_processor->setup_export (fn.c_str (), options)) {
 		_exporting    = true;
 		_export_start = ss - effective_latency ();
 		_export_end   = es - effective_latency ();
